@@ -1,0 +1,8 @@
+[toolchain]
+# The MSRV in Cargo.toml is 1.94, which sqlx 0.9 forces. This is the *dev*
+# toolchain and is deliberately newer: pinning it means `cargo` picks the right
+# one here even when the machine's default stable is older than the MSRV, which
+# otherwise fails with a resolver error naming four packages at once.
+channel = "1.95.0"
+components = ["rustfmt", "clippy", "rust-src", "rust-analyzer"]
+profile = "minimal"

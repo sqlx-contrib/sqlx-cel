@@ -96,11 +96,25 @@ a driver-neutral microsecond count rather than a `PgInterval`.
 ## Development
 
 sqlx 0.9 declares `rust-version = "1.94"`, so this crate does too.
+`rust-toolchain.toml` pins the dev toolchain to 1.95.0, so plain `cargo` picks
+the right one even when the machine's default stable is older than the MSRV.
 
 ```sh
 cargo test --features sqlite,mysql   # all drivers, incl. end-to-end SQLite
 cargo clippy --all-targets --features sqlite,mysql
 ```
+
+There is a Nix flake and a devcontainer for a batteries-included shell — the
+pinned toolchain plus the `sqlite3` CLI for poking at `tests/sqlite.rs`:
+
+```sh
+nix develop
+```
+
+The devcontainer installs Nix and does the same thing, so "Reopen in Container"
+lands in the same environment. The flake exposes only a dev shell: this is a
+library crate with no binary, and `buildRustPackage` would want a committed
+`Cargo.lock`, which a library deliberately does not have.
 
 ## License
 

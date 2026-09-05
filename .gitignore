@@ -1,2 +1,10 @@
 /target
 Cargo.lock
+
+# Nix build outputs and direnv's cached shell. flake.lock IS committed.
+result
+result-*
+.direnv/
+
+# macOS
+.DS_Store
