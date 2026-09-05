@@ -50,6 +50,13 @@ of them with an identical value list:
 † SQLite parses `REGEXP` but resolves it to a function the application must
 register; without one it fails at execution with `no such function: REGEXP`.
 
+`Dialect::is_positional` reports whether the placeholders render alike, so a
+bind cannot be referenced twice. Nothing here needs it — `transpile` binds each
+literal once — but a caller splicing a fragment that names one bind from two
+places does, and getting it wrong shifts every subsequent bind. It defaults to
+comparing two rendered placeholders, which correctly reports SQLite's numbered
+`?1` form as *not* positional.
+
 Dialects are pure text and always available. *Binding* the values needs the
 matching Cargo feature — `postgres` (default), `sqlite`, `mysql` — which
 supplies `Encode`/`Type` for `Value` and enables `bind_all`. With no driver
