@@ -1,0 +1,30 @@
+[package]
+name = "sqlx-cel"
+version = "0.0.0"
+edition = "2024"
+license = "MIT"
+description = "Transpiles a CEL expression into a Postgres WHERE fragment with positional bind values, for sqlx."
+repository = "https://github.com/sqlx-contrib/sqlx-cel"
+keywords = ["cel", "sqlx", "postgres", "filter"]
+categories = ["database"]
+
+# Denied rather than warned, because several consumers in this ecosystem deny
+# pedantic at the workspace level: a lint this crate tolerates is a lint they
+# cannot.
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+
+[dependencies]
+# Parser only -- `Program::compile` does not type-check, which is a design
+# constraint rather than a version to wait out. See docs/transpiler.md.
+cel = { version = "0.14", default-features = false }
+# 0.9 is the floor: `SqlSafeStr` and the `add<'t, T>` signature are both 0.9.
+sqlx = { version = "0.9", default-features = false, features = ["postgres"] }
+chrono = { version = "0.4", optional = true, default-features = false }
+time = { version = "0.3", optional = true }
+
+[features]
+default = ["chrono"]
+chrono = ["dep:chrono", "sqlx/chrono"]
+time = ["dep:time", "sqlx/time"]
