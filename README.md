@@ -19,14 +19,14 @@ use sqlx_cel::{BindAll, dialect};
 
 let program = cel::Program::compile(r#"title == "demo" && read_count > 3"#)?;
 
-let (sql, values) =
+let filter =
     sqlx_cel::transpile(program.expression(), VOLUME_COLUMNS, dialect::Postgres)?;
-// sql:    ("volumes"."title" = $1 AND "volumes"."read_count" > $2)
-// values: [Value::Text("demo".into()), Value::Int(3)]
+// filter.sql:    ("volumes"."title" = $1 AND "volumes"."read_count" > $2)
+// filter.values: [Value::Text("demo".into()), Value::Int(3)]
 
 let volumes = sqlx::query_as::<_, Volume>(AssertSqlSafe(
-        format!("SELECT * FROM volumes WHERE {sql}")))
-    .bind_all(values)
+        format!("SELECT * FROM volumes WHERE {}", filter.sql)))
+    .bind_all(filter.values)
     .fetch_all(&pool)
     .await?;
 ```

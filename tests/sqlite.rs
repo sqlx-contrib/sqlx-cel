@@ -53,12 +53,15 @@ async fn seeded_pool() -> SqlitePool {
 /// Runs `filter` against the seeded table and returns the matching titles.
 async fn titles(pool: &SqlitePool, filter: &str) -> Vec<String> {
     let program = cel::Program::compile(filter).expect("filter must parse");
-    let (where_sql, values) = sqlx_cel::transpile(program.expression(), COLUMNS, dialect::Sqlite)
+    let fragment = sqlx_cel::transpile(program.expression(), COLUMNS, dialect::Sqlite)
         .expect("must transpile");
 
-    let sql = format!("SELECT title FROM volumes WHERE {where_sql} ORDER BY title");
+    let sql = format!(
+        "SELECT title FROM volumes WHERE {} ORDER BY title",
+        fragment.sql
+    );
     sqlx::query(AssertSqlSafe(sql))
-        .bind_all(values)
+        .bind_all(fragment.values)
         .fetch_all(pool)
         .await
         .expect("query must execute")
@@ -101,14 +104,15 @@ async fn splices_after_a_hand_written_prefix() {
     let pool = seeded_pool().await;
 
     let program = cel::Program::compile("read_count > 1").unwrap();
-    let (where_sql, values) =
-        sqlx_cel::transpile(program.expression(), COLUMNS, dialect::Sqlite).unwrap();
+    let fragment = sqlx_cel::transpile(program.expression(), COLUMNS, dialect::Sqlite).unwrap();
 
-    let sql =
-        format!("SELECT title FROM volumes WHERE published = ? AND {where_sql} ORDER BY title");
+    let sql = format!(
+        "SELECT title FROM volumes WHERE published = ? AND {} ORDER BY title",
+        fragment.sql
+    );
     let rows: Vec<String> = sqlx::query(AssertSqlSafe(sql))
         .bind(true)
-        .bind_all(values)
+        .bind_all(fragment.values)
         .fetch_all(&pool)
         .await
         .unwrap()

@@ -9,6 +9,38 @@ use crate::duration;
 use crate::error::Error;
 use crate::value::Value;
 
+/// A SQL `WHERE` fragment and the values its placeholders bind.
+///
+/// What [`transpile`] produces. The fragment carries no enclosing parentheses
+/// and no `WHERE` keyword, so it splices into SQL the caller wrote by hand.
+///
+/// Despite the name it is simply a boolean SQL expression, and is equally valid
+/// anywhere one is: a `HAVING` clause, a `CHECK` constraint, a partial index
+/// predicate.
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// # use sqlx_cel::{WhereFragment, dialect};
+/// let program = cel::Program::compile(r#"title == "demo""#)?;
+/// let fragment =
+///     sqlx_cel::transpile(program.expression(), &[("title", "t")], dialect::Postgres)?;
+///
+/// assert_eq!(fragment.sql, r#""t" = $1"#);
+///
+/// // Or destructure it. `..` is required: the struct is non-exhaustive.
+/// let WhereFragment { sql, values, .. } = fragment;
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct WhereFragment {
+    /// The SQL text, with placeholders in the target dialect's syntax.
+    pub sql: String,
+    /// The values the placeholders bind, in the order they must be bound.
+    pub values: Vec<Value>,
+}
+
 /// Knobs on a [`transpile_with`] call.
 ///
 /// Construct with struct-update syntax so that a future field does not break
@@ -59,23 +91,24 @@ impl Default for Options {
 ///
 /// let program = cel::Program::compile(r#"title == "demo" && read_count > 3"#)?;
 ///
-/// let (sql, values) =
+/// let postgres =
 ///     sqlx_cel::transpile(program.expression(), VOLUME_COLUMNS, dialect::Postgres)?;
-/// assert_eq!(sql, r#"("volumes"."title" = $1 AND "volumes"."read_count" > $2)"#);
+/// assert_eq!(postgres.sql, r#"("volumes"."title" = $1 AND "volumes"."read_count" > $2)"#);
 ///
-/// let (sql, _) =
+/// let sqlite =
 ///     sqlx_cel::transpile(program.expression(), VOLUME_COLUMNS, dialect::Sqlite)?;
-/// assert_eq!(sql, r#"("volumes"."title" = ? AND "volumes"."read_count" > ?)"#);
+/// assert_eq!(sqlite.sql, r#"("volumes"."title" = ? AND "volumes"."read_count" > ?)"#);
 ///
-/// let (sql, _) =
+/// let mysql =
 ///     sqlx_cel::transpile(program.expression(), VOLUME_COLUMNS, dialect::MySql)?;
-/// assert_eq!(sql, "(`volumes`.`title` = ? AND `volumes`.`read_count` > ?)");
+/// assert_eq!(mysql.sql, "(`volumes`.`title` = ? AND `volumes`.`read_count` > ?)");
 ///
 /// // The values are the same whichever dialect produced the text.
 /// assert_eq!(
-///     values,
+///     postgres.values,
 ///     vec![sqlx_cel::Value::Text("demo".into()), sqlx_cel::Value::Int(3)],
 /// );
+/// assert_eq!(postgres.values, sqlite.values);
 /// # Ok(())
 /// # }
 /// ```
@@ -90,7 +123,7 @@ pub fn transpile<'c>(
     expr: &Expression,
     columns: impl Into<Columns<'c>>,
     dialect: impl Dialect,
-) -> Result<(String, Vec<Value>), Error> {
+) -> Result<WhereFragment, Error> {
     transpile_with(expr, columns, dialect, Options::default())
 }
 
@@ -101,14 +134,14 @@ pub fn transpile<'c>(
 /// use sqlx_cel::{Options, dialect};
 ///
 /// let program = cel::Program::compile(r#"title == "demo""#)?;
-/// let (sql, _) = sqlx_cel::transpile_with(
+/// let fragment = sqlx_cel::transpile_with(
 ///     program.expression(),
 ///     &[("title", "volumes.title")],
 ///     dialect::Postgres,
 ///     Options { param_offset: 5, ..Default::default() },
 /// )?;
 ///
-/// assert_eq!(sql, r#""volumes"."title" = $5"#);
+/// assert_eq!(fragment.sql, r#""volumes"."title" = $5"#);
 /// # Ok(())
 /// # }
 /// ```
@@ -121,7 +154,7 @@ pub fn transpile_with<'c>(
     columns: impl Into<Columns<'c>>,
     dialect: impl Dialect,
     options: Options,
-) -> Result<(String, Vec<Value>), Error> {
+) -> Result<WhereFragment, Error> {
     let mut transpiler = Transpiler {
         columns: columns.into(),
         dialect,
@@ -129,7 +162,10 @@ pub fn transpile_with<'c>(
         param_offset: options.param_offset.max(1),
     };
     let sql = transpiler.expr(expr)?;
-    Ok((sql, transpiler.values))
+    Ok(WhereFragment {
+        sql,
+        values: transpiler.values,
+    })
 }
 
 struct Transpiler<'c, D> {
@@ -147,11 +183,11 @@ impl<D: Dialect> Transpiler<'_, D> {
             .placeholder(self.param_offset + self.values.len() - 1)
     }
 
-    fn expr(&mut self, expr: &IdedExpr) -> Result<String, Error> {
+    fn expr(&mut self, node: &IdedExpr) -> Result<String, Error> {
         // `id` is for source mapping; this crate reports errors by path.
-        match &expr.expr {
+        match &node.expr {
             Expr::Literal(literal) => self.literal(literal),
-            Expr::Ident(_) | Expr::Select(_) => self.ident(expr),
+            Expr::Ident(_) | Expr::Select(_) => self.ident(node),
             Expr::Call(call) => self.call(call),
             Expr::Comprehension(comprehension) => Err(Error::UnsupportedMacro {
                 name: macro_name(comprehension),
@@ -183,7 +219,8 @@ impl<D: Dialect> Transpiler<'_, D> {
             LiteralValue::Bytes(v) => Value::Bytes(v.to_vec()),
             LiteralValue::Double(v) => Value::Float(**v),
             LiteralValue::Int(v) => Value::Int(**v),
-            LiteralValue::String(v) => Value::Text(String::from(&**v)),
+            // cel's String is a newtype over std's, derefing to `str`.
+            LiteralValue::String(v) => Value::Text((**v).to_owned()),
             LiteralValue::UInt(v) => Value::Uint(**v),
             // Only `x == null` / `x != null` are meaningful, and those are
             // handled in `comparison` before the literal is ever reached.
@@ -290,10 +327,11 @@ impl<D: Dialect> Transpiler<'_, D> {
             return Ok("FALSE".to_string());
         }
 
-        let mut elements = Vec::with_capacity(list.elements.len());
-        for element in &list.elements {
-            elements.push(self.expr(element)?);
-        }
+        let elements = list
+            .elements
+            .iter()
+            .map(|element| self.expr(element))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(format!("{lhs} IN ({})", elements.join(", ")))
     }
 
@@ -349,8 +387,8 @@ impl<D: Dialect> Transpiler<'_, D> {
 
 /// Reconstructs a dotted path from a chain of `Ident`/`Select` expressions:
 /// `Select { operand: Ident("author"), field: "name" }` → `author.name`.
-fn ident_path(expr: &IdedExpr) -> Result<String, Error> {
-    match &expr.expr {
+fn ident_path(node: &IdedExpr) -> Result<String, Error> {
+    match &node.expr {
         Expr::Ident(name) => Ok(name.clone()),
         // `has(a.b)` desugars to a `Select` with `test` set rather than to a
         // comprehension, so it arrives here rather than in `expr`.
@@ -363,20 +401,22 @@ fn ident_path(expr: &IdedExpr) -> Result<String, Error> {
     }
 }
 
-fn is_null(expr: &IdedExpr) -> bool {
-    matches!(&expr.expr, Expr::Literal(LiteralValue::Null))
+fn is_null(node: &IdedExpr) -> bool {
+    matches!(&node.expr, Expr::Literal(LiteralValue::Null))
 }
 
+/// Borrows exactly `N` arguments, or reports the arity mismatch.
+///
+/// `&[T]` converts straight to `&[T; N]`, so this costs no allocation on a path
+/// that every operator node walks.
 fn exact_args<'e, const N: usize>(
     call: &'e CallExpr,
     function: &str,
-) -> Result<[&'e IdedExpr; N], Error> {
-    <[&IdedExpr; N]>::try_from(call.args.iter().collect::<Vec<_>>().as_slice()).map_err(|_| {
-        Error::Arity {
-            function: function.to_string(),
-            expected: N,
-            actual: call.args.len(),
-        }
+) -> Result<&'e [IdedExpr; N], Error> {
+    call.args.as_slice().try_into().map_err(|_| Error::Arity {
+        function: function.to_string(),
+        expected: N,
+        actual: call.args.len(),
     })
 }
 
@@ -459,7 +499,7 @@ fn macro_name(comprehension: &ComprehensionExpr) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{Options, transpile, transpile_with};
+    use super::{Options, WhereFragment, transpile, transpile_with};
     use crate::dialect::{MySql, Postgres, Sqlite};
     use crate::{Error, Value};
 
@@ -478,14 +518,20 @@ mod tests {
     ];
 
     /// Transpiles for Postgres, or returns the error.
-    fn pg(source: &str) -> Result<(String, Vec<Value>), Error> {
+    fn pg(source: &str) -> Result<WhereFragment, Error> {
         let program = cel::Program::compile(source).expect("source must parse");
         transpile(program.expression(), COLUMNS, Postgres)
     }
 
+    /// SQL and values as a pair, so an assertion can pin both at once.
+    fn parts(source: &str) -> (String, Vec<Value>) {
+        let fragment = pg(source).unwrap();
+        (fragment.sql, fragment.values)
+    }
+
     /// The SQL only, panicking on error.
     fn sql(source: &str) -> String {
-        pg(source).unwrap().0
+        pg(source).unwrap().sql
     }
 
     /// The error only, panicking on success.
@@ -496,7 +542,7 @@ mod tests {
     #[test]
     fn equality_binds_the_literal_and_quotes_the_column() {
         assert_eq!(
-            pg(r#"name == "Alice""#).unwrap(),
+            parts(r#"name == "Alice""#),
             (
                 r#""name" = $1"#.to_string(),
                 vec![Value::Text("Alice".into())]
@@ -507,7 +553,7 @@ mod tests {
     #[test]
     fn maps_cel_paths_to_their_backing_columns() {
         assert_eq!(
-            pg(r#"title == "The Go Programming Language""#).unwrap(),
+            parts(r#"title == "The Go Programming Language""#),
             (
                 r#""book_title" = $1"#.to_string(),
                 vec![Value::Text("The Go Programming Language".into())],
@@ -528,7 +574,7 @@ mod tests {
     #[test]
     fn combines_and_or_with_parentheses_per_branch() {
         assert_eq!(
-            pg(r#"name == "Alice" && age > 30"#).unwrap(),
+            parts(r#"name == "Alice" && age > 30"#),
             (
                 r#"("name" = $1 AND "age" > $2)"#.to_string(),
                 vec![Value::Text("Alice".into()), Value::Int(30)],
@@ -555,7 +601,7 @@ mod tests {
     #[test]
     fn compares_two_columns_without_binding_anything() {
         assert_eq!(
-            pg("update_time > create_time").unwrap(),
+            parts("update_time > create_time"),
             (r#""updated_at" > "created_at""#.to_string(), vec![]),
         );
     }
@@ -584,10 +630,13 @@ mod tests {
         // cel-rust folds the sign into the literal at parse time, so there is
         // no `-_` call to handle.
         assert_eq!(
-            pg("balance > -5").unwrap(),
+            parts("balance > -5"),
             (r#""balance" > $1"#.to_string(), vec![Value::Int(-5)]),
         );
-        assert_eq!(pg("balance > -2.5").unwrap().1, vec![Value::Float(-2.5)]);
+        assert_eq!(
+            pg("balance > -2.5").unwrap().values,
+            vec![Value::Float(-2.5)]
+        );
     }
 
     #[test]
@@ -600,12 +649,15 @@ mod tests {
 
     #[test]
     fn binds_every_literal_kind() {
-        assert_eq!(pg("published == true").unwrap().1, vec![Value::Bool(true)]);
-        assert_eq!(pg("age == 42").unwrap().1, vec![Value::Int(42)]);
-        assert_eq!(pg("age == 42u").unwrap().1, vec![Value::Uint(42)]);
-        assert_eq!(pg("age == 2.75").unwrap().1, vec![Value::Float(2.75)]);
         assert_eq!(
-            pg(r#"cover == b"abc""#).unwrap().1,
+            pg("published == true").unwrap().values,
+            vec![Value::Bool(true)]
+        );
+        assert_eq!(pg("age == 42").unwrap().values, vec![Value::Int(42)]);
+        assert_eq!(pg("age == 42u").unwrap().values, vec![Value::Uint(42)]);
+        assert_eq!(pg("age == 2.75").unwrap().values, vec![Value::Float(2.75)]);
+        assert_eq!(
+            pg(r#"cover == b"abc""#).unwrap().values,
             vec![Value::Bytes(vec![97, 98, 99])],
         );
     }
@@ -613,7 +665,7 @@ mod tests {
     #[test]
     fn renders_in_over_a_list_literal() {
         assert_eq!(
-            pg(r#"name in ["Alice", "Bob", "Carol"]"#).unwrap(),
+            parts(r#"name in ["Alice", "Bob", "Carol"]"#),
             (
                 r#""name" IN ($1, $2, $3)"#.to_string(),
                 vec![
@@ -635,9 +687,9 @@ mod tests {
         // `x IN ()` is not valid SQL. The discarded left-hand side must not
         // leave an orphan in `values` -- that would desynchronize every
         // placeholder after it.
-        assert_eq!(pg("name in []").unwrap(), ("FALSE".to_string(), vec![]));
+        assert_eq!(parts("name in []"), ("FALSE".to_string(), vec![]));
         assert_eq!(
-            pg(r#"("z" in []) && name == "Alice""#).unwrap(),
+            parts(r#"("z" in []) && name == "Alice""#),
             (
                 r#"(FALSE AND "name" = $1)"#.to_string(),
                 vec![Value::Text("Alice".into())],
@@ -679,7 +731,7 @@ mod tests {
     fn null_becomes_is_null_rather_than_a_bound_null() {
         // Binding NULL to `col = $1` yields NULL, not true.
         assert_eq!(
-            pg("cover == null").unwrap(),
+            parts("cover == null"),
             (r#""cover" IS NULL"#.to_string(), vec![])
         );
         assert_eq!(sql("cover != null"), r#""cover" IS NOT NULL"#);
@@ -698,28 +750,31 @@ mod tests {
         assert_eq!(sql(r#"name == "Alice""#), r#""name" = $1"#);
 
         let program = cel::Program::compile(r#"name == "Alice" && age > 30"#).unwrap();
-        let (sql, values) = transpile_with(
+        let fragment = transpile_with(
             program.expression(),
             COLUMNS,
             Postgres,
             Options { param_offset: 5 },
         )
         .unwrap();
-        assert_eq!(sql, r#"("name" = $5 AND "age" > $6)"#);
-        assert_eq!(values, vec![Value::Text("Alice".into()), Value::Int(30)]);
+        assert_eq!(fragment.sql, r#"("name" = $5 AND "age" > $6)"#);
+        assert_eq!(
+            fragment.values,
+            vec![Value::Text("Alice".into()), Value::Int(30)],
+        );
     }
 
     #[test]
     fn a_zero_offset_is_treated_as_one_because_there_is_no_dollar_zero() {
         let program = cel::Program::compile(r#"name == "Alice""#).unwrap();
-        let (sql, _) = transpile_with(
+        let fragment = transpile_with(
             program.expression(),
             COLUMNS,
             Postgres,
             Options { param_offset: 0 },
         )
         .unwrap();
-        assert_eq!(sql, r#""name" = $1"#);
+        assert_eq!(fragment.sql, r#""name" = $1"#);
     }
 
     #[test]
@@ -825,7 +880,7 @@ mod tests {
     #[cfg(any(feature = "chrono", feature = "time"))]
     #[test]
     fn binds_timestamp_literals() {
-        let (sql, values) = pg(r#"create_time > timestamp("2025-01-02T03:04:05Z")"#).unwrap();
+        let (sql, values) = parts(r#"create_time > timestamp("2025-01-02T03:04:05Z")"#);
         assert_eq!(sql, r#""created_at" > $1"#);
         assert_eq!(values.len(), 1);
         #[cfg(feature = "chrono")]
@@ -854,7 +909,7 @@ mod tests {
     #[test]
     fn binds_duration_literals_as_microseconds() {
         assert_eq!(
-            pg(r#"timeout > duration("1h30m")"#).unwrap(),
+            parts(r#"timeout > duration("1h30m")"#),
             (
                 r#""timeout" > $1"#.to_string(),
                 vec![Value::Duration(90 * 60 * 1_000_000)],
@@ -863,7 +918,7 @@ mod tests {
         // Negative durations are legal CEL and are why `std::time::Duration`
         // is not the carrier.
         assert_eq!(
-            pg(r#"timeout > duration("-1h")"#).unwrap().1,
+            pg(r#"timeout > duration("-1h")"#).unwrap().values,
             vec![Value::Duration(-60 * 60 * 1_000_000)],
         );
     }
@@ -932,7 +987,9 @@ mod tests {
 
     fn for_dialect(source: &str, dialect: impl crate::Dialect) -> String {
         let program = cel::Program::compile(source).unwrap();
-        transpile(program.expression(), COLUMNS, dialect).unwrap().0
+        transpile(program.expression(), COLUMNS, dialect)
+            .unwrap()
+            .sql
     }
 
     #[test]
@@ -982,9 +1039,13 @@ mod tests {
         let program = cel::Program::compile(source).unwrap();
         let pg = transpile(program.expression(), COLUMNS, Postgres)
             .unwrap()
-            .1;
-        let sqlite = transpile(program.expression(), COLUMNS, Sqlite).unwrap().1;
-        let mysql = transpile(program.expression(), COLUMNS, MySql).unwrap().1;
+            .values;
+        let sqlite = transpile(program.expression(), COLUMNS, Sqlite)
+            .unwrap()
+            .values;
+        let mysql = transpile(program.expression(), COLUMNS, MySql)
+            .unwrap()
+            .values;
         assert_eq!(pg, sqlite);
         assert_eq!(pg, mysql);
     }

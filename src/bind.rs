@@ -17,18 +17,18 @@ use crate::value::Value;
 /// use sqlx_cel::{BindAll, dialect};
 ///
 /// let program = cel::Program::compile(r#"title == "demo""#)?;
-/// let (filter, values) = sqlx_cel::transpile(
+/// let filter = sqlx_cel::transpile(
 ///     program.expression(),
 ///     &[("title", "volumes.title")],
 ///     dialect::Postgres,
 /// )?;
 ///
 /// // The filter's placeholders are $1..$N, so the limit's follows them.
-/// let limit = values.len() + 1;
-/// let sql = format!("SELECT title FROM volumes WHERE {filter} LIMIT ${limit}");
+/// let limit = filter.values.len() + 1;
+/// let sql = format!("SELECT title FROM volumes WHERE {} LIMIT ${limit}", filter.sql);
 ///
 /// let titles: Vec<String> = sqlx::query_scalar(AssertSqlSafe(sql))
-///     .bind_all(values)
+///     .bind_all(filter.values)
 ///     .bind(50i64)
 ///     .fetch_all(&pool)
 ///     .await?;

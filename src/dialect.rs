@@ -34,7 +34,7 @@ pub trait Dialect {
     /// we"ird              →  "we""ird"
     /// ```
     fn quote_ident(&self, column: &str) -> String {
-        quote_delimited(column, '"', '"')
+        quote_delimited(column, '"')
     }
 
     /// Renders `s.contains(x)`, `s.startsWith(x)` and `s.endsWith(x)` as a
@@ -153,7 +153,7 @@ impl Dialect for MySql {
     /// Backticks, because `"…"` is a string literal in MySQL's default
     /// `ANSI_QUOTES`-off mode. An embedded backtick is doubled.
     fn quote_ident(&self, column: &str) -> String {
-        quote_delimited(column, '`', '`')
+        quote_delimited(column, '`')
     }
 
     /// `||` is logical OR in MySQL unless `PIPES_AS_CONCAT` is set, so string
@@ -172,21 +172,23 @@ impl Dialect for MySql {
     }
 }
 
-/// Quotes each dot-separated segment of `column`, doubling any embedded `close`.
-fn quote_delimited(column: &str, open: char, close: char) -> String {
+/// Quotes each dot-separated segment of `column` in `delimiter`, doubling any
+/// embedded occurrence of it. Every SQL identifier quote is its own terminator,
+/// so one character covers both ends.
+fn quote_delimited(column: &str, delimiter: char) -> String {
     let mut out = String::with_capacity(column.len() + 4);
     for (i, segment) in column.split('.').enumerate() {
         if i > 0 {
             out.push('.');
         }
-        out.push(open);
+        out.push(delimiter);
         for ch in segment.chars() {
-            if ch == close {
-                out.push(close);
+            if ch == delimiter {
+                out.push(delimiter);
             }
             out.push(ch);
         }
-        out.push(close);
+        out.push(delimiter);
     }
     out
 }

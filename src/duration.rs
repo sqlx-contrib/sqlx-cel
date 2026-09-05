@@ -6,6 +6,10 @@
 //! because CEL permits negative durations and `std::time::Duration` cannot hold
 //! one — `read_time > duration("-1h")` compiles in cel-rust.
 
+/// How many fraction digits are worth keeping. Beyond this the value is finer
+/// than a nanosecond even for the coarsest unit, so it cannot change the result.
+const MAX_FRACTION_DIGITS: usize = 18;
+
 /// Nanoseconds per unit, longest name first so `ms` is not read as `m`.
 const UNITS: &[(&str, i128)] = &[
     ("ns", 1),
@@ -74,11 +78,13 @@ fn parse_nanos(input: &str) -> Result<i128, String> {
         let (whole, tail) = take_digits(rest);
         let (fraction, scale, tail) = if let Some(tail) = tail.strip_prefix('.') {
             let (digits, tail) = take_digits(tail);
-            // Anything past the 18th fraction digit is finer than a nanosecond
-            // even when the unit is an hour, so it cannot affect the result.
-            // Go likewise stops accumulating once the fraction overflows.
-            let kept = &digits[..digits.len().min(18)];
-            let scale = 10i128.pow(u32::try_from(kept.len()).unwrap_or(0));
+            // Anything past MAX_FRACTION_DIGITS is finer than a nanosecond even
+            // when the unit is an hour, so it cannot affect the result. Go
+            // likewise stops accumulating once the fraction overflows.
+            let kept = &digits[..digits.len().min(MAX_FRACTION_DIGITS)];
+            let exponent = u32::try_from(kept.len())
+                .expect("kept is capped at MAX_FRACTION_DIGITS, which fits in a u32");
+            let scale = 10i128.pow(exponent);
             (kept, scale, tail)
         } else {
             ("", 1, tail)

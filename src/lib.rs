@@ -11,11 +11,11 @@
 //! ];
 //!
 //! let program = cel::Program::compile(r#"title == "demo" && read_count > 3"#)?;
-//! let (sql, values) =
+//! let fragment =
 //!     sqlx_cel::transpile(program.expression(), VOLUME_COLUMNS, dialect::Postgres)?;
 //!
-//! assert_eq!(sql, r#"("volumes"."title" = $1 AND "volumes"."read_count" > $2)"#);
-//! assert_eq!(values, vec![Value::Text("demo".into()), Value::Int(3)]);
+//! assert_eq!(fragment.sql, r#"("volumes"."title" = $1 AND "volumes"."read_count" > $2)"#);
+//! assert_eq!(fragment.values, vec![Value::Text("demo".into()), Value::Int(3)]);
 //! # Ok(())
 //! # }
 //! ```
@@ -108,7 +108,7 @@ mod bind;
 pub use column::Columns;
 pub use dialect::Dialect;
 pub use error::Error;
-pub use transpiler::{Options, transpile, transpile_with};
+pub use transpiler::{Options, WhereFragment, transpile, transpile_with};
 pub use value::Value;
 
 #[cfg(any(feature = "postgres", feature = "sqlite", feature = "mysql"))]
