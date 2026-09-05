@@ -2,6 +2,8 @@
 name = "sqlx-cel"
 version = "0.0.0"
 edition = "2024"
+# Not a choice: sqlx 0.9 declares it. See docs/values.md for why 0.9 is the floor.
+rust-version = "1.94"
 license = "MIT"
 description = "Transpiles a CEL expression into a Postgres WHERE fragment with positional bind values, for sqlx."
 repository = "https://github.com/sqlx-contrib/sqlx-cel"

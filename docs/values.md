@@ -148,3 +148,7 @@ sqlx **0.9**. The `SqlSafeStr` gate and the `add<'t, T>` signature are both
 0.9; 0.8's `add<T>` carries a `T: 'q` bound tied to the arguments' lifetime,
 which is satisfiable with owned values but constrains the API for no gain.
 Supporting both is not worth a feature flag on a crate with no users yet.
+
+That decision sets the MSRV: sqlx 0.9 declares `rust-version = "1.94"`, so
+both crates do too. A `stable` toolchain older than that fails at resolution
+with a clear message, not a confusing one — `rustup update stable` is the fix.
