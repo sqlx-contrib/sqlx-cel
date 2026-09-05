@@ -1,6 +1,6 @@
 [package]
 name = "sqlx-cel"
-version = "0.0.0"
+version = "0.1.0"
 edition = "2024"
 # Not a choice: sqlx 0.9 declares it. 0.9 is the floor because `SqlSafeStr` and
 # the `Arguments::add<'t, T>` signature are both 0.9.
