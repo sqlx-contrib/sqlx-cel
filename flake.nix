@@ -45,10 +45,15 @@
           # name the build script expects on every platform.
           env.CC = "${pkgs.stdenv.cc}/bin/cc";
 
+          # Only greet a human. CI drives this shell with
+          # `nix develop --command ...`, where a banner is just noise in front
+          # of the output someone is actually reading.
           shellHook = ''
-            echo "${manifest.name} ${manifest.version} — $(cargo --version)"
-            echo "  cargo test --features sqlite,mysql    # all drivers, incl. end-to-end SQLite"
-            echo "  cargo clippy --all-targets --features sqlite,mysql"
+            if [[ $- == *i* ]]; then
+              echo "${manifest.name} ${manifest.version} — $(cargo --version)"
+              echo "  cargo test --features sqlite,mysql    # all drivers, incl. end-to-end SQLite"
+              echo "  cargo clippy --all-targets --features sqlite,mysql"
+            fi
           '';
         };
       }

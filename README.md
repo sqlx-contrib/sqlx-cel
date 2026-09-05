@@ -1,5 +1,12 @@
 # sqlx-cel
 
+> Transpile a CEL expression into a SQL `WHERE` fragment with bind values —
+> Postgres, SQLite and MySQL, behind a fail-closed column allow-list.
+
+[![CI](https://github.com/sqlx-contrib/sqlx-cel/actions/workflows/ci.yml/badge.svg)](https://github.com/sqlx-contrib/sqlx-cel/actions/workflows/ci.yml)
+[![Crate](https://img.shields.io/crates/v/sqlx-cel)](https://crates.io/crates/sqlx-cel)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 Transpiles a [CEL](https://cel.dev) expression into a SQL `WHERE` fragment
 with bind values, for [sqlx](https://github.com/launchbadge/sqlx).
 
