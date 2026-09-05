@@ -1,5 +1,9 @@
 # The column map
 
+> **Status: implemented as specified.** `Columns<'a>` wraps
+> `&'a [(&'a str, &'a str)]` and scans it linearly, and `transpile` takes
+> `impl Into<Columns<'_>>`.
+
 The AIP-path → database-column allow-list. It is the security boundary of both
 crates, so it gets its own document.
 
@@ -91,4 +95,4 @@ document:
   the caller's SQL joins `authors`.
 - **JSONB.** `("author.name", …)` has no answer, because the quoting rule
   produces `"author"."name"`, not `"author" -> 'name'`. Out of scope for v1;
-  say so rather than half-supporting it.
+  say so rather than half-supporting it. Documented as such on `Columns`.

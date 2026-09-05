@@ -1,5 +1,9 @@
 # Bind values
 
+> **Status: implemented, with two corrections marked below** — `Value` carries a
+> driver-neutral microsecond count rather than a `PgInterval`, and
+> `AssertSqlSafe` is re-exported at the sqlx root, not under `sqlx::sql_str`.
+
 The Go predecessor returns `[]any` and hands it to pgx, which takes `...any`.
 sqlx has no equivalent: `Query::bind` is typed at the call site. This document
 is the design that replaces it. It is the only part of the port that is a
@@ -41,9 +45,17 @@ pub enum Value {
     Uint(u64),
     Float(f64),
     Timestamp(DateTime<Utc>),   // feature `chrono`
-    Interval(PgInterval),
+    Duration(i64),              // microseconds
 }
 ```
+
+**Correction.** The last variant was specified as `Interval(PgInterval)`. Once
+the crate stopped being Postgres-only that no longer works: `Value` has to stay
+driver-neutral, since it is the type the transpiler is tested against. It now
+carries a signed microsecond count, and each driver's `Encode` impl turns it
+into whatever that database needs — a `PgInterval` on Postgres, the bare
+integer on SQLite and MySQL, which have no interval type a bind value can
+carry.
 
 Mirrors `cel::common::ast::LiteralValue` plus the two constructed types.
 There is deliberately **no `Null` variant** — see [Nulls](#nulls).
@@ -61,11 +73,15 @@ different callers.
 **1. The core.** Driver-neutral, testable, what everything else is built on:
 
 ```rust
-pub fn transpile(expr: &Expression, columns: &Columns) -> Result<(String, Vec<Value>), Error>;
+pub fn transpile(
+    expr: &Expression,
+    columns: impl Into<Columns<'_>>,
+    dialect: impl Dialect,
+) -> Result<(String, Vec<Value>), Error>;
 ```
 
-**2. `impl Encode<'_, Postgres> + Type<Postgres> for Value`**, so `.bind(v)`
-works directly. The trick is `Encode::produces`
+**2. `impl Encode<'_, DB> + Type<DB> for Value`**, one per driver behind its
+Cargo feature, so `.bind(v)` works directly. The trick is `Encode::produces`
 (`sqlx-core-0.9.0/src/encode.rs:48`), a hook for a value-dependent type OID:
 `PgArguments::add` prefers it over `T::type_info()`. So `Type::type_info`
 returns any placeholder and `Type::compatible` returns `true` broadly, while
@@ -90,7 +106,8 @@ sqlx 0.9's `query`/`query_as` take `impl SqlSafeStr`, which is implemented for
 point of this crate — must be wrapped:
 
 ```rust
-use sqlx::sql_str::AssertSqlSafe;
+use sqlx::AssertSqlSafe;   // NOT `sqlx::sql_str::AssertSqlSafe` -- that module
+                           // is not re-exported by the sqlx facade
 sqlx::query_as::<_, Volume>(AssertSqlSafe(sql))
 ```
 
@@ -112,9 +129,10 @@ features, defaulting to `chrono`. `timestamp("…")` takes an RFC 3339 string;
 parse it to the enabled type. If both features are on, prefer `chrono` for the
 `Value` variant rather than adding two variants.
 
-**Durations.** Postgres `INTERVAL` is `PgInterval`, which implements
-`Type<Postgres>` and has `TryFrom<std::time::Duration>`
-(`sqlx-postgres-0.9.0/src/types/interval.rs:95`).
+**Durations.** Parsed to microseconds and carried as `i64`; the Postgres impl
+builds a `PgInterval { months: 0, days: 0, microseconds }` from it, and the
+others bind the integer. `months` and `days` stay zero because they are
+calendar-relative and would change the meaning of an exact span.
 
 CEL permits `duration("-1h")`, and `std::time::Duration` cannot hold it. Do
 not route through `std::time::Duration`; construct `PgInterval { months: 0,
@@ -125,8 +143,9 @@ CEL's duration grammar is Go's `time.ParseDuration` syntax (`1h30m`, `-5s`,
 `300ms`, `1.5h`). No Rust crate parses it; write the parser, it is ~40 lines,
 and test `1.5h`, `-1h`, `1h30m`, bare `0`, and overflow.
 
-Sub-microsecond precision is lost — `PgInterval` is microseconds and Postgres
-`INTERVAL` stores no finer. Round, do not truncate silently, and document it.
+Sub-microsecond precision is lost — Postgres `INTERVAL` stores no finer, and it
+is the common denominator across drivers. Rounded half away from zero, not
+truncated, and documented on `Value::Duration`.
 
 ## Nulls
 

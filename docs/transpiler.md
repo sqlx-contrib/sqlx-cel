@@ -1,4 +1,10 @@
-# CEL to Postgres
+# CEL to SQL
+
+> **Status: implemented.** This was the design written before the code, and it
+> is still accurate except where marked. The one structural change is that the
+> crate is no longer Postgres-only: the walk is driver-neutral and everything
+> dialect-specific goes through the `Dialect` trait. See
+> [What changed in the implementation](#what-changed-in-the-implementation).
 
 This is the normative specification for the transpiler. It is a port of
 [pgxcel](https://github.com/pgx-contrib/pgxcel) — read `transpiler.go` there
@@ -18,10 +24,14 @@ placeholders bind:
 ```rust
 let program = cel::Program::compile(r#"title == "demo" && read_count > 3"#)?;
 
-let (sql, values) = sqlx_cel::transpile(program.expression(), &COLUMNS)?;
+let (sql, values) =
+    sqlx_cel::transpile(program.expression(), COLUMNS, dialect::Postgres)?;
 // sql:    ("volumes"."title" = $1 AND "volumes"."read_count" > $2)
 // values: [Value::Text("demo"), Value::Int(3)]
 ```
+
+The third argument is the dialect; `Sqlite` and `MySql` produce the same value
+list with `?` placeholders and their own quoting.
 
 No connection, no query execution, no `SELECT`. The caller splices the
 fragment into SQL it wrote by hand. Value binding is specified separately in
@@ -85,7 +95,7 @@ Everything below matches pgxcel's output byte for byte. The tests in
 | `s.contains(x)` | `s LIKE '%' \|\| $N \|\| '%'` |
 | `s.startsWith(x)` | `s LIKE $N \|\| '%'` |
 | `s.endsWith(x)` | `s LIKE '%' \|\| $N` |
-| `s.matches(re)` | `s ~ $N` (POSIX regex) |
+| `s.matches(re)` | `s ~ $N` (POSIX regex), or `s REGEXP ?` |
 | `timestamp("…")` | `$N`, bound as a timestamp |
 | `duration("…")` | `$N`, bound as an interval |
 
@@ -136,7 +146,8 @@ accept a column name from request data.
 ### Quoting
 
 Quote each dot-separated segment of the mapped column independently, doubling
-any embedded `"`, matching `quote_ident` semantics:
+any embedded `"`, matching `quote_ident` semantics. This is `Dialect::quote_ident`,
+which MySQL overrides with backticks:
 
 ```
 volumes.read_count  →  "volumes"."read_count"
@@ -159,7 +170,8 @@ pub struct Options { pub param_offset: usize }  // default 1
 caller with a hand-written `WHERE tenant_id = $1` prefix uses it too.
 
 Postgres numbering is what sqlx uses for `Postgres` as well, so the fragment
-drops in unchanged.
+drops in unchanged. Dialects with positional `?` ignore the offset — there is no
+number to shift — but bind order still matters.
 
 ## No type checker
 
@@ -193,14 +205,29 @@ diagnosis available.
    true.
 4. **Bind values are an enum, not `any`.** See [values.md](values.md).
 
-## Open for the implementer
+## What changed in the implementation
 
-- Whether `transpile` takes `&HashMap<&str, &str>`, `&[(&str, &str)]`, or
-  `impl Fn(&str) -> Option<&str>`. See [columns.md](columns.md) for why the
-  slice is the likely answer.
-- Whether `Options` is a struct or a builder. pgxcel used variadic functional
-  options because Go has no struct-update syntax; Rust has `..Default::default()`,
-  so a plain struct is probably right.
-- Error type shape. One enum, `#[non_exhaustive]`, no `thiserror` unless the
-  dependency earns itself — `aip-rs` hand-writes `Display` and `Error` and this
-  crate should look like it.
+1. **Not Postgres-only.** Placeholder syntax, identifier quoting, `LIKE`
+   concatenation and the regex operator go through a `Dialect` trait, with
+   `Postgres`, `Sqlite` and `MySql` shipped. The AST walk itself is unchanged
+   and driver-neutral.
+2. **`has()` needs its own rejection.** It does *not* desugar to a
+   comprehension — cel-rust turns `has(a.b)` into `Select { test: true }`, so it
+   arrives in identifier position and is rejected there.
+3. **`map` and `filter` are reported together.** Both desugar to the same
+   empty-list accumulator, and a three-argument `map` is shaped exactly like a
+   `filter`, so the error names them as `map/filter` rather than guessing.
+4. **`x in []` rolls back its left-hand side.** pgxcel transpiles the left side
+   before discovering the list is empty, then discards the SQL — leaving any
+   value it bound orphaned in the args list. Here the bindings are truncated
+   along with the discarded SQL.
+
+## Resolved from "open for the implementer"
+
+- `transpile` takes `impl Into<Columns<'_>>`, which covers `&[(&str, &str)]` and
+  `&[(&str, &str); N]`. The slice was the right answer.
+- `Options` is a plain struct with a hand-written `Default` (`param_offset: 1`).
+  It is deliberately *not* `#[non_exhaustive]`, because that would forbid the
+  `..Default::default()` that makes it worth being a struct.
+- One error enum, `#[non_exhaustive]`, hand-written `Display` and `Error`, no
+  `thiserror`.
