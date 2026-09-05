@@ -24,6 +24,34 @@ pub trait Dialect {
     /// still emitted in the order they must be bound.
     fn placeholder(&self, index: usize) -> String;
 
+    /// Whether every placeholder renders alike, so that a bind cannot be
+    /// referenced twice.
+    ///
+    /// This crate never needs it: [`transpile`](crate::transpile) binds each
+    /// literal once and never points at an earlier one. It matters to callers
+    /// that splice a fragment referencing a bind more than once — a key-set
+    /// cursor predicate pins each more-significant column in every clause after
+    /// the first:
+    ///
+    /// ```sql
+    /// -- numbered: $1 is bound once, referenced twice
+    /// ("title" > $1) OR ("title" = $1 AND "id" > $2)
+    /// -- positional: each ? consumes its own bind, so the value list repeats
+    /// ("title" > ?)  OR ("title" = ?  AND "id" > ?)
+    /// ```
+    ///
+    /// The default asks [`placeholder`](Dialect::placeholder) to render two
+    /// adjacent indices and compares them, which is right for any dialect that
+    /// distinguishes parameters at all. That includes the awkward middle case:
+    /// a dialect emitting SQLite's numbered `?1` / `?2` form is positional in
+    /// syntax but still addressable, renders the two differently, and is
+    /// correctly reported as *not* positional.
+    ///
+    /// Override it to answer without rendering anything.
+    fn is_positional(&self) -> bool {
+        self.placeholder(1) == self.placeholder(2)
+    }
+
     /// Quotes a possibly-dotted column path, one segment at a time.
     ///
     /// Defaults to ANSI double quotes with embedded `"` doubled, which is what
@@ -72,6 +100,9 @@ impl<D: Dialect + ?Sized> Dialect for &D {
     fn placeholder(&self, index: usize) -> String {
         (**self).placeholder(index)
     }
+    fn is_positional(&self) -> bool {
+        (**self).is_positional()
+    }
     fn quote_ident(&self, column: &str) -> String {
         (**self).quote_ident(column)
     }
@@ -94,6 +125,12 @@ impl Dialect for Postgres {
 
     fn placeholder(&self, index: usize) -> String {
         format!("${index}")
+    }
+
+    /// `$1` names a parameter, so one bind can be referenced from several
+    /// places in the same statement.
+    fn is_positional(&self) -> bool {
+        false
     }
 
     /// POSIX regex. CEL's `matches` is RE2 and Postgres's `~` is POSIX ERE;
@@ -128,6 +165,12 @@ impl Dialect for Sqlite {
         "?".to_string()
     }
 
+    /// SQLite also accepts a numbered `?NNN`, which *is* addressable, but this
+    /// dialect emits the anonymous form.
+    fn is_positional(&self) -> bool {
+        true
+    }
+
     fn regex(&self, lhs: &str, rhs: &str) -> Option<String> {
         Some(format!("{lhs} REGEXP {rhs}"))
     }
@@ -148,6 +191,10 @@ impl Dialect for MySql {
 
     fn placeholder(&self, _index: usize) -> String {
         "?".to_string()
+    }
+
+    fn is_positional(&self) -> bool {
+        true
     }
 
     /// Backticks, because `"…"` is a string literal in MySQL's default
@@ -223,6 +270,69 @@ mod tests {
         assert_eq!(Postgres.placeholder(7), "$7");
         assert_eq!(Sqlite.placeholder(7), "?");
         assert_eq!(MySql.placeholder(7), "?");
+    }
+
+    /// The property a caller splicing a bind into two places depends on.
+    #[test]
+    fn positional_dialects_are_the_ones_that_render_every_placeholder_alike() {
+        assert!(!Postgres.is_positional());
+        assert!(Sqlite.is_positional());
+        assert!(MySql.is_positional());
+    }
+
+    /// The three override the default, so nothing checks the default against
+    /// them unless something does it here. A divergence would mean a custom
+    /// dialect that does not override gets a different answer to a built-in
+    /// with the same placeholder syntax.
+    #[test]
+    fn the_default_inference_agrees_with_every_explicit_answer() {
+        fn inferred(dialect: &impl Dialect) -> bool {
+            dialect.placeholder(1) == dialect.placeholder(2)
+        }
+        assert_eq!(inferred(&Postgres), Postgres.is_positional());
+        assert_eq!(inferred(&Sqlite), Sqlite.is_positional());
+        assert_eq!(inferred(&MySql), MySql.is_positional());
+    }
+
+    /// A dialect that does not override gets the inference -- including the
+    /// case the inference exists for: `?1` looks positional and is not.
+    #[test]
+    fn a_custom_dialect_falls_back_to_the_inference() {
+        // Calls through the blanket impl for a reference, which has to forward
+        // the new method or it silently falls back to the default.
+        fn by_reference(dialect: impl Dialect) -> bool {
+            dialect.is_positional()
+        }
+
+        struct Anonymous;
+        impl Dialect for Anonymous {
+            fn name(&self) -> &'static str {
+                "anonymous"
+            }
+            fn placeholder(&self, _: usize) -> String {
+                "?".to_string()
+            }
+            fn regex(&self, _: &str, _: &str) -> Option<String> {
+                None
+            }
+        }
+
+        struct Numbered;
+        impl Dialect for Numbered {
+            fn name(&self) -> &'static str {
+                "numbered"
+            }
+            fn placeholder(&self, index: usize) -> String {
+                format!("?{index}")
+            }
+            fn regex(&self, _: &str, _: &str) -> Option<String> {
+                None
+            }
+        }
+
+        assert!(Anonymous.is_positional());
+        assert!(!Numbered.is_positional(), "?1 is addressable");
+        assert!(!by_reference(&Numbered));
     }
 
     #[test]
