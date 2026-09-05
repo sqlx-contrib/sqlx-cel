@@ -2,7 +2,8 @@
 name = "sqlx-cel"
 version = "0.0.0"
 edition = "2024"
-# Not a choice: sqlx 0.9 declares it. See docs/values.md for why 0.9 is the floor.
+# Not a choice: sqlx 0.9 declares it. 0.9 is the floor because `SqlSafeStr` and
+# the `Arguments::add<'t, T>` signature are both 0.9.
 rust-version = "1.94"
 license = "MIT"
 description = "Transpiles a CEL expression into a SQL WHERE fragment with bind values, for sqlx."
@@ -18,8 +19,9 @@ all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 
 [dependencies]
-# Parser only -- `Program::compile` does not type-check, which is a design
-# constraint rather than a version to wait out. See docs/transpiler.md.
+# Parser only -- `Program::compile` does not type-check, and cel-rust has no
+# equivalent of cel-go's checking phase at all. That is a design constraint to
+# walk around, not a version to wait out; see the crate docs.
 cel = { version = "0.14", default-features = false }
 # 0.9 is the floor: `SqlSafeStr` and the `add<'t, T>` signature are both 0.9.
 # Optional: with no driver feature on, this crate is a pure CEL -> SQL

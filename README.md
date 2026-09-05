@@ -89,16 +89,15 @@ execution, `SELECT` generation, migrations.
 
 ## Design notes
 
-| Document | What it settles |
-| --- | --- |
-| [docs/transpiler.md](docs/transpiler.md) | The AST walk, operator coverage, what is rejected, quoting, parameter numbering |
-| [docs/values.md](docs/values.md) | The `Value` enum and how it reaches sqlx, time types, nulls, version floor |
-| [docs/columns.md](docs/columns.md) | The fail-closed path → column allow-list, and why it is the security boundary |
+The rationale lives with the code — `cargo doc --open`, or the doc comments on
+`transpile`, `Value`, `Columns`, `Dialect` and `BindAll`.
 
-These were written before the implementation and are largely still accurate;
-where the code diverges, each document says so inline. The two substantive
-divergences are that the crate is not Postgres-only, and that `Value` carries
-a driver-neutral microsecond count rather than a `PgInterval`.
+Two things worth knowing that the API docs do not say. This is a port of
+[pgxcel](https://github.com/pgx-contrib/pgxcel); its `transpiler.go` is the
+reference for the walk and its `transpiler_test.go` supplied the assertion
+pairs, so read those first if you are changing the SQL that comes out. And the
+string matchers emit `LIKE`, not `ILIKE` — pgxaip's README claims otherwise but
+its own test asserts `LIKE`, and the test is what this follows.
 
 ## Development
 
