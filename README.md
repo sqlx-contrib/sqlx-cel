@@ -19,9 +19,19 @@ the filter half of [sqlx-aip](https://github.com/sqlx-contrib/sqlx-aip).
 
 ## Status
 
-Being rewritten. `src/` is deliberately empty; there is no API to document
-yet. The rationale will live with the code — `cargo doc --open` — rather than
-here.
+Rewritten and working. The whole crate is one module, `src/filter.rs`; the
+rationale lives with the code — `cargo doc --open` — rather than here.
+
+```rust
+let users = Table::new()
+    .column("age", ColumnType::Int)
+    .aliased("createdAt", "created_at", ColumnType::Timestamp);
+
+let filter = Filter::compile("age > 21 && createdAt > timestamp('2024-01-01T00:00:00Z')")?;
+
+let mut query = QueryBuilder::<Postgres>::new("SELECT * FROM users WHERE ");
+filter.push_to(&users, &mut query)?;
+```
 
 Prior attempts are on branches: `main` for the first cut, and
 `filter-predicate-refactor` for a second. Neither is a target to reproduce.
