@@ -1697,24 +1697,35 @@ mod tests {
             ));
         }
 
+        /// A `Schema` is trusted to name columns, but "trusted" is not
+        /// "unquoted": a name is still doubled at the dialect's own quote
+        /// character. The name here carries both quote characters, so each
+        /// dialect escapes one and passes the other through untouched.
+        struct Hostile;
+
+        impl Schema for Hostile {
+            fn resolve(&self, _: &[&str]) -> Option<Column> {
+                Some(Column::new("a\"`b OR 1=1 --", ColumnType::Int))
+            }
+        }
+
+        fn hostile<DB: Dialect>() -> String {
+            Filter::compile("age > 1")
+                .unwrap()
+                .to_sql::<DB, _>(&Hostile)
+                .unwrap()
+                .as_str()
+                .to_owned()
+        }
+
         #[test]
         fn a_quote_in_a_column_name_is_escaped_not_injected() {
-            struct Hostile;
-            impl Schema for Hostile {
-                fn resolve(&self, _: &[&str]) -> Option<Column> {
-                    Some(Column::new(r#"a" OR 1=1 --"#, ColumnType::Int))
-                }
-            }
-
-            let filter = Filter::compile("age > 1").unwrap();
             #[cfg(feature = "postgres")]
-            assert_eq!(
-                filter
-                    .to_sql::<sqlx::Postgres, _>(&Hostile)
-                    .unwrap()
-                    .as_str(),
-                r#""a"" OR 1=1 --" > $1"#,
-            );
+            assert_eq!(hostile::<sqlx::Postgres>(), r#""a""`b OR 1=1 --" > $1"#);
+            #[cfg(feature = "sqlite")]
+            assert_eq!(hostile::<sqlx::Sqlite>(), r#""a""`b OR 1=1 --" > ?"#);
+            #[cfg(feature = "mysql")]
+            assert_eq!(hostile::<sqlx::MySql>(), r#"`a"``b OR 1=1 --` > ?"#);
         }
     }
 
