@@ -35,7 +35,7 @@
 //! placeholders continue your numbering rather than restarting at `$1` — the
 //! classic off-by-`$n` bug is not expressible.
 //!
-//! [`Filter::to_sql`] renders a standalone [`SqlFragment`] for callers assembling
+//! [`Filter::to_fragment`] renders a standalone [`SqlFragment`] for callers assembling
 //! queries some other way. It implements [`IntoArguments`], so it drops
 //! straight into `sqlx::query_with`.
 //!

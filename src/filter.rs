@@ -549,7 +549,7 @@ impl<DB: Dialect> SqlSink<DB> for QueryBuilder<DB> {
         // `push_bind` panics rather than returning on an encode failure. Every
         // `Value` variant delegates to an infallible primitive encoder, so the
         // panic is unreachable -- but it is why `Filter::push_to` documents one
-        // and `Filter::to_sql` does not.
+        // and `Filter::to_fragment` does not.
         DB::push_bind(self, value);
         Ok(())
     }
@@ -557,7 +557,7 @@ impl<DB: Dialect> SqlSink<DB> for QueryBuilder<DB> {
 
 /// A rendered fragment and the arguments that go with it.
 ///
-/// Produced by [`Filter::to_sql`], for callers not building through
+/// Produced by [`Filter::to_fragment`], for callers not building through
 /// `QueryBuilder`.
 ///
 /// ### Placeholders start at the beginning
@@ -803,7 +803,7 @@ impl Filter {
     /// If the driver fails to encode a bind value, because
     /// `QueryBuilder::push_bind` panics rather than returning. Every [`Value`]
     /// delegates to an infallible primitive encoder, so this is unreachable;
-    /// [`Filter::to_sql`] returns [`Error::Encode`] instead if you would rather
+    /// [`Filter::to_fragment`] returns [`Error::Encode`] instead if you would rather
     /// not rely on that.
     pub fn push_to<DB: Dialect, S: Schema>(
         &self,
@@ -825,16 +825,19 @@ impl Filter {
     ///
     /// let users = Table::new().column("email", ColumnType::Text);
     /// let filter = Filter::compile("email.endsWith('@example.com')").unwrap();
-    /// let sql = filter.to_sql::<Postgres, _>(&users).unwrap();
+    /// let fragment = filter.to_fragment::<Postgres, _>(&users).unwrap();
     ///
-    /// assert_eq!(sql.as_str(), r#""email" LIKE $1 ESCAPE '!'"#);
+    /// assert_eq!(fragment.as_str(), r#""email" LIKE $1 ESCAPE '!'"#);
     /// # }
     /// ```
     ///
     /// # Errors
     ///
     /// Any [`Error`] except [`Error::Parse`].
-    pub fn to_sql<DB: Dialect, S: Schema>(&self, schema: &S) -> Result<SqlFragment<DB>, Error> {
+    pub fn to_fragment<DB: Dialect, S: Schema>(
+        &self,
+        schema: &S,
+    ) -> Result<SqlFragment<DB>, Error> {
         let mut fragment = SqlFragment {
             sql: String::new(),
             arguments: DB::Arguments::default(),
@@ -1290,7 +1293,7 @@ mod tests {
     /// Transpile against `users()`, returning the fragment or the error.
     fn sql<DB: Dialect>(source: &str) -> Result<String, Error> {
         Filter::compile(source)?
-            .to_sql::<DB, _>(&users())
+            .to_fragment::<DB, _>(&users())
             .map(|rendered| rendered.as_str().to_owned())
     }
 
@@ -1433,7 +1436,7 @@ mod tests {
         fn empty_schema_rejects_everything() {
             let filter = Filter::compile("age > 21").unwrap();
             assert!(matches!(
-                filter.to_sql::<Postgres, _>(&Table::new()),
+                filter.to_fragment::<Postgres, _>(&Table::new()),
                 Err(Error::UnknownColumn(path)) if path == "age"
             ));
         }
@@ -1457,7 +1460,7 @@ mod tests {
             }
 
             let filter = Filter::compile("profile.city == 'Sofia'").unwrap();
-            filter.to_sql::<Postgres, _>(&Recording).unwrap();
+            filter.to_fragment::<Postgres, _>(&Recording).unwrap();
         }
     }
 
@@ -1712,7 +1715,7 @@ mod tests {
         fn hostile<DB: Dialect>() -> String {
             Filter::compile("age > 1")
                 .unwrap()
-                .to_sql::<DB, _>(&Hostile)
+                .to_fragment::<DB, _>(&Hostile)
                 .unwrap()
                 .as_str()
                 .to_owned()
