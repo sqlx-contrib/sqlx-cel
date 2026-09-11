@@ -56,7 +56,7 @@ pub enum Error {
     /// A constant subexpression could not be evaluated -- for example
     /// `timestamp('not a date')`.
     Eval(cel::ExecutionError),
-    /// The expression names something the [`Schema`] does not expose. The
+    /// The expression names something the [`ColumnResolver`] does not expose. The
     /// payload is the dotted CEL path, not a SQL identifier.
     UnknownColumn(String),
     /// Valid CEL that this crate declines to translate.
@@ -67,7 +67,7 @@ pub enum Error {
     TypeMismatch {
         /// The dotted CEL path of the column.
         column: String,
-        /// What the schema says the column holds.
+        /// What the columns says the column holds.
         expected: ColumnType,
         /// What the expression tried to compare it against.
         actual: ColumnType,
@@ -113,13 +113,14 @@ impl std::error::Error for Error {
 }
 
 // ---------------------------------------------------------------------------
-// Schema
+// Columns
 // ---------------------------------------------------------------------------
 
 /// The SQL type family of a column, and the whole of this crate's type system.
 ///
-/// cel-rust has no checker -- `Program::compile` only parses -- so a [`Schema`]
-/// is the only thing standing between `age > 'tuesday'` and a database error.
+/// cel-rust has no checker -- `Program::compile` only parses -- so a
+/// [`ColumnResolver`] is the only thing standing between `age > 'tuesday'` and
+/// a database error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ColumnType {
@@ -173,23 +174,23 @@ impl Column {
 }
 
 /// The allow-list. Fail-closed: a path this returns `None` for is rejected, so
-/// the default posture of an unconfigured schema is "nothing is filterable".
+/// the default posture of an unconfigured columns is "nothing is filterable".
 ///
 /// `path` is the CEL path split on `.`, so `user.email` arrives as
 /// `["user", "email"]`. Flattening it to a single column, mapping it to a JSON
 /// extraction, or refusing it are all your call.
-pub trait Schema {
+pub trait ColumnResolver {
     /// Resolve a CEL path to a column, or `None` to reject it.
     fn resolve(&self, path: &[&str]) -> Option<Column>;
 }
 
-impl<S: Schema + ?Sized> Schema for &S {
+impl<C: ColumnResolver + ?Sized> ColumnResolver for &C {
     fn resolve(&self, path: &[&str]) -> Option<Column> {
         (**self).resolve(path)
     }
 }
 
-/// A [`Schema`] built from an explicit list of columns.
+/// A [`ColumnResolver`] built from an explicit list of columns.
 ///
 /// ```
 /// use sqlx_cel::{ColumnType, Table};
@@ -235,7 +236,7 @@ impl Table {
     }
 }
 
-impl Schema for Table {
+impl ColumnResolver for Table {
     fn resolve(&self, path: &[&str]) -> Option<Column> {
         self.columns.get(path.join(".").as_str()).cloned()
     }
@@ -650,9 +651,9 @@ impl Operand {
     /// evaluate it far more correctly than we could re-implement it. That
     /// covers literals, `timestamp('...')`, `duration('24h')`, list literals,
     /// and arithmetic between any of them.
-    fn resolve<S: Schema>(
+    fn resolve<C: ColumnResolver>(
         expr: &IdedExpr,
-        schema: &S,
+        columns: &C,
         context: &cel::Context<'_>,
     ) -> Result<Self, Error> {
         if expr.references().variables().is_empty() {
@@ -670,7 +671,7 @@ impl Operand {
 
         match &expr.expr {
             Expr::Ident(_) | Expr::Select(_) => {
-                let (column, path) = lookup(expr, schema)?;
+                let (column, path) = lookup(expr, columns)?;
                 Ok(Self::Column(column, path))
             }
             Expr::Call(call) if call.func_name == "size" => {
@@ -681,7 +682,7 @@ impl Operand {
                 else {
                     return Err(Error::Unsupported("size() with more than one argument"));
                 };
-                let (column, path) = lookup(target, schema)?;
+                let (column, path) = lookup(target, columns)?;
                 Ok(Self::Length(column, path))
             }
             Expr::Call(call) => Err(Error::UnknownFunction(call.func_name.clone())),
@@ -712,13 +713,13 @@ fn collect<'e>(expr: &'e IdedExpr, path: &mut Vec<&'e str>) -> Result<(), Error>
     }
 }
 
-/// Resolve a CEL path against the schema. Returns the column and the dotted
+/// Resolve a CEL path against the columns. Returns the column and the dotted
 /// path, which errors and type mismatches quote back at the caller.
-fn lookup<S: Schema>(expr: &IdedExpr, schema: &S) -> Result<(Column, String), Error> {
+fn lookup<C: ColumnResolver>(expr: &IdedExpr, columns: &C) -> Result<(Column, String), Error> {
     let mut path = Vec::new();
     collect(expr, &mut path)?;
     let joined = path.join(".");
-    schema
+    columns
         .resolve(&path)
         .map(|column| (column, joined.clone()))
         .ok_or(Error::UnknownColumn(joined))
@@ -728,7 +729,7 @@ fn lookup<S: Schema>(expr: &IdedExpr, schema: &S) -> Result<(Column, String), Er
 // Filter
 // ---------------------------------------------------------------------------
 
-/// A parsed CEL filter, ready to be rendered against any schema and driver.
+/// A parsed CEL filter, ready to be rendered against any columns and driver.
 ///
 /// Compiling is independent of both, so a filter parsed once can be reused
 /// across tables and databases.
@@ -805,12 +806,12 @@ impl Filter {
     /// delegates to an infallible primitive encoder, so this is unreachable;
     /// [`Filter::to_sql`] returns [`Error::Encode`] instead if you would rather
     /// not rely on that.
-    pub fn push_to<DB: Dialect, S: Schema>(
+    pub fn push_to<DB: Dialect, C: ColumnResolver>(
         &self,
-        schema: &S,
+        columns: &C,
         query: &mut QueryBuilder<DB>,
     ) -> Result<(), Error> {
-        predicate(&self.expr, schema, &cel::Context::default(), query)
+        predicate(&self.expr, columns, &cel::Context::default(), query)
     }
 
     /// Render a standalone fragment and its arguments.
@@ -834,12 +835,15 @@ impl Filter {
     /// # Errors
     ///
     /// Any [`Error`] except [`Error::Parse`].
-    pub fn to_sql<DB: Dialect, S: Schema>(&self, schema: &S) -> Result<SqlFragment<DB>, Error> {
+    pub fn to_sql<DB: Dialect, C: ColumnResolver>(
+        &self,
+        columns: &C,
+    ) -> Result<SqlFragment<DB>, Error> {
         let mut fragment = SqlFragment {
             sql: String::new(),
             arguments: DB::Arguments::default(),
         };
-        predicate(&self.expr, schema, &cel::Context::default(), &mut fragment)?;
+        predicate(&self.expr, columns, &cel::Context::default(), &mut fragment)?;
         Ok(fragment)
     }
 }
@@ -849,15 +853,15 @@ impl Filter {
 // ---------------------------------------------------------------------------
 
 /// Write `expr` as a SQL boolean expression.
-fn predicate<DB, S, K>(
+fn predicate<DB, C, K>(
     expr: &IdedExpr,
-    schema: &S,
+    columns: &C,
     context: &cel::Context<'_>,
     out: &mut K,
 ) -> Result<(), Error>
 where
     DB: Dialect,
-    S: Schema,
+    C: ColumnResolver,
     K: SqlSink<DB>,
 {
     // A predicate mentioning no columns is a constant. Fold it rather than
@@ -878,7 +882,7 @@ where
     }
 
     match &expr.expr {
-        Expr::Call(call) => call_predicate(call, expr, schema, context, out),
+        Expr::Call(call) => call_predicate(call, expr, columns, context, out),
 
         // `has(x.y)`. CEL asks whether the field is present; the closest SQL
         // question is whether the column is non-null.
@@ -887,7 +891,7 @@ where
             collect(&select.operand, &mut path)?;
             path.push(&select.field);
             let joined = path.join(".");
-            let column = schema
+            let column = columns
                 .resolve(&path)
                 .ok_or(Error::UnknownColumn(joined.clone()))?;
             push_column::<DB, K>(&column, out);
@@ -897,7 +901,7 @@ where
 
         // A bare column used as a predicate: `is_active`.
         Expr::Ident(_) | Expr::Select(_) => {
-            let (column, path) = lookup(expr, schema)?;
+            let (column, path) = lookup(expr, columns)?;
             if column.ty != ColumnType::Bool {
                 return Err(Error::TypeMismatch {
                     column: path,
@@ -919,53 +923,53 @@ where
 
 /// The operator table. Split out of [`predicate`] only because the match is
 /// long, not because it is a separate concern.
-fn call_predicate<DB, S, K>(
+fn call_predicate<DB, C, K>(
     call: &cel::common::ast::CallExpr,
     expr: &IdedExpr,
-    schema: &S,
+    columns: &C,
     context: &cel::Context<'_>,
     out: &mut K,
 ) -> Result<(), Error>
 where
     DB: Dialect,
-    S: Schema,
+    C: ColumnResolver,
     K: SqlSink<DB>,
 {
     let args = call.args.as_slice();
 
     match (call.func_name.as_str(), call.target.as_deref(), args) {
         (operators::LOGICAL_AND, None, [lhs, rhs]) => {
-            infix(lhs, rhs, " AND ", schema, context, out)
+            infix(lhs, rhs, " AND ", columns, context, out)
         }
-        (operators::LOGICAL_OR, None, [lhs, rhs]) => infix(lhs, rhs, " OR ", schema, context, out),
+        (operators::LOGICAL_OR, None, [lhs, rhs]) => infix(lhs, rhs, " OR ", columns, context, out),
 
         (operators::LOGICAL_NOT, None, [inner]) => {
             out.push_sql("NOT ");
-            group(inner, schema, context, out)
+            group(inner, columns, context, out)
         }
 
         (operators::CONDITIONAL, None, [cond, yes, no]) => {
             out.push_sql("CASE WHEN ");
-            predicate(cond, schema, context, out)?;
+            predicate(cond, columns, context, out)?;
             out.push_sql(" THEN ");
-            predicate(yes, schema, context, out)?;
+            predicate(yes, columns, context, out)?;
             out.push_sql(" ELSE ");
-            predicate(no, schema, context, out)?;
+            predicate(no, columns, context, out)?;
             out.push_sql(" END");
             Ok(())
         }
 
         (operators::IN, None, [needle, haystack]) => {
-            in_list(needle, haystack, schema, context, out)
+            in_list(needle, haystack, columns, context, out)
         }
 
         (name, None, [lhs, rhs]) if operator(name).is_some() => {
             let symbol = operator(name).unwrap_or_default();
-            compare(name, symbol, lhs, rhs, schema, context, out)
+            compare(name, symbol, lhs, rhs, columns, context, out)
         }
 
         (name @ ("startsWith" | "endsWith" | "contains"), Some(target), [pattern]) => {
-            like(name, target, pattern, schema, context, out)
+            like(name, target, pattern, columns, context, out)
         }
 
         ("matches", Some(target), [pattern]) => {
@@ -974,8 +978,8 @@ where
                     "matches() on a driver with no regex operator",
                 ));
             };
-            let (column, path) = lookup(target, schema)?;
-            let Operand::Value(value) = Operand::resolve(pattern, schema, context)? else {
+            let (column, path) = lookup(target, columns)?;
+            let Operand::Value(value) = Operand::resolve(pattern, columns, context)? else {
                 return Err(Error::Unsupported("matches() with a non-constant pattern"));
             };
             let value = value.coerce(&column, &path)?;
@@ -990,45 +994,45 @@ where
         // it cannot be -- it is an int. Fall through to the operand resolver so
         // the error names the real problem.
         _ => {
-            drop(Operand::resolve(expr, schema, context)?);
+            drop(Operand::resolve(expr, columns, context)?);
             Err(Error::Unsupported("this call as a predicate"))
         }
     }
 }
 
 /// `lhs OP rhs`, each side parenthesised so precedence survives the round trip.
-fn infix<DB, S, K>(
+fn infix<DB, C, K>(
     lhs: &IdedExpr,
     rhs: &IdedExpr,
     symbol: &str,
-    schema: &S,
+    columns: &C,
     context: &cel::Context<'_>,
     out: &mut K,
 ) -> Result<(), Error>
 where
     DB: Dialect,
-    S: Schema,
+    C: ColumnResolver,
     K: SqlSink<DB>,
 {
-    group(lhs, schema, context, out)?;
+    group(lhs, columns, context, out)?;
     out.push_sql(symbol);
-    group(rhs, schema, context, out)
+    group(rhs, columns, context, out)
 }
 
 /// A predicate wrapped in parentheses.
-fn group<DB, S, K>(
+fn group<DB, C, K>(
     expr: &IdedExpr,
-    schema: &S,
+    columns: &C,
     context: &cel::Context<'_>,
     out: &mut K,
 ) -> Result<(), Error>
 where
     DB: Dialect,
-    S: Schema,
+    C: ColumnResolver,
     K: SqlSink<DB>,
 {
     out.push_sql("(");
-    predicate(expr, schema, context, out)?;
+    predicate(expr, columns, context, out)?;
     out.push_sql(")");
     Ok(())
 }
@@ -1048,22 +1052,22 @@ fn operator(name: &str) -> Option<&'static str> {
 
 /// A binary comparison, after both sides have been resolved.
 #[allow(clippy::too_many_arguments)]
-fn compare<DB, S, K>(
+fn compare<DB, C, K>(
     name: &str,
     symbol: &str,
     lhs: &IdedExpr,
     rhs: &IdedExpr,
-    schema: &S,
+    columns: &C,
     context: &cel::Context<'_>,
     out: &mut K,
 ) -> Result<(), Error>
 where
     DB: Dialect,
-    S: Schema,
+    C: ColumnResolver,
     K: SqlSink<DB>,
 {
-    let lhs = Operand::resolve(lhs, schema, context)?;
-    let rhs = Operand::resolve(rhs, schema, context)?;
+    let lhs = Operand::resolve(lhs, columns, context)?;
+    let rhs = Operand::resolve(rhs, columns, context)?;
 
     match (lhs, rhs) {
         // Null is not a value you can bind: `col = NULL` is unknown, never
@@ -1123,20 +1127,20 @@ where
 }
 
 /// `col IN (…)`.
-fn in_list<DB, S, K>(
+fn in_list<DB, C, K>(
     needle: &IdedExpr,
     haystack: &IdedExpr,
-    schema: &S,
+    columns: &C,
     context: &cel::Context<'_>,
     out: &mut K,
 ) -> Result<(), Error>
 where
     DB: Dialect,
-    S: Schema,
+    C: ColumnResolver,
     K: SqlSink<DB>,
 {
-    let (column, path) = lookup(needle, schema)?;
-    let Operand::List(values) = Operand::resolve(haystack, schema, context)? else {
+    let (column, path) = lookup(needle, columns)?;
+    let Operand::List(values) = Operand::resolve(haystack, columns, context)? else {
         return Err(Error::Unsupported("`in` against a non-constant list"));
     };
 
@@ -1160,20 +1164,20 @@ where
 }
 
 /// `startsWith` / `endsWith` / `contains` as `LIKE`.
-fn like<DB, S, K>(
+fn like<DB, C, K>(
     name: &str,
     target: &IdedExpr,
     pattern: &IdedExpr,
-    schema: &S,
+    columns: &C,
     context: &cel::Context<'_>,
     out: &mut K,
 ) -> Result<(), Error>
 where
     DB: Dialect,
-    S: Schema,
+    C: ColumnResolver,
     K: SqlSink<DB>,
 {
-    let (column, path) = lookup(target, schema)?;
+    let (column, path) = lookup(target, columns)?;
     if column.ty != ColumnType::Text {
         return Err(Error::TypeMismatch {
             column: path,
@@ -1182,7 +1186,7 @@ where
         });
     }
 
-    let Operand::Value(Value::Text(text)) = Operand::resolve(pattern, schema, context)? else {
+    let Operand::Value(Value::Text(text)) = Operand::resolve(pattern, columns, context)? else {
         return Err(Error::Unsupported(
             "startsWith/endsWith/contains with a non-constant string",
         ));
@@ -1449,7 +1453,7 @@ mod tests {
         #[test]
         fn schema_sees_the_full_dotted_path() {
             struct Recording;
-            impl Schema for Recording {
+            impl ColumnResolver for Recording {
                 fn resolve(&self, path: &[&str]) -> Option<Column> {
                     assert_eq!(path, ["profile", "city"]);
                     Some(Column::new("city", ColumnType::Text))
@@ -1697,13 +1701,13 @@ mod tests {
             ));
         }
 
-        /// A `Schema` is trusted to name columns, but "trusted" is not
+        /// A `ColumnResolver` is trusted to name columns, but "trusted" is not
         /// "unquoted": a name is still doubled at the dialect's own quote
         /// character. The name here carries both quote characters, so each
         /// dialect escapes one and passes the other through untouched.
         struct Hostile;
 
-        impl Schema for Hostile {
+        impl ColumnResolver for Hostile {
             fn resolve(&self, _: &[&str]) -> Option<Column> {
                 Some(Column::new("a\"`b OR 1=1 --", ColumnType::Int))
             }
