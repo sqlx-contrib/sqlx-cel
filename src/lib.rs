@@ -50,16 +50,16 @@
 //!
 //! Rejected, deliberately and with an error rather than an approximation: the
 //! comprehension macros (`all`, `exists`, `map`, `filter`), map and struct
-//! literals, and any column the [`ColumnResolver`] does not name.
+//! literals, and any column the [`Schema`] does not name.
 //!
-//! # Why a resolver is mandatory
+//! # Why a schema is mandatory
 //!
 //! cel-rust does not type-check. `Program::compile` parses and stops; there is
 //! no equivalent of cel-go's checking phase. So `age > 'tuesday'` is a
 //! perfectly good CEL program, and the only thing that can catch it before the
-//! database does is the [`ColumnType`] a [`ColumnResolver`] attaches to each
-//! column. The allow-list and the type checker are the same object because they
-//! have to be.
+//! database does is the [`ColumnType`] a [`Schema`] attaches to each column.
+//! The allow-list and the type checker are the same object because they have to
+//! be.
 //!
 //! # Nulls
 //!
@@ -82,6 +82,4 @@ compile_error!(
 
 mod filter;
 
-pub use filter::{
-    Column, ColumnResolver, ColumnType, Dialect, Error, Filter, SqlFragment, Table, Value,
-};
+pub use filter::{Column, ColumnType, Dialect, Error, Filter, Schema, SqlFragment, Table, Value};
