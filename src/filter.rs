@@ -178,14 +178,40 @@ impl Column {
 /// `path` is the CEL path split on `.`, so `user.email` arrives as
 /// `["user", "email"]`. Flattening it to a single column, mapping it to a JSON
 /// extraction, or refusing it are all your call.
+///
+/// [`Table`] covers the static case. For anything decided per request --
+/// per-tenant visibility, a permission check, a column that only some callers
+/// may filter on -- a closure is a `Schema` too:
+///
+/// ```
+/// # #[cfg(feature = "postgres")] {
+/// use sqlx::Postgres;
+/// use sqlx_cel::{Column, ColumnType, Filter};
+///
+/// let admin = false;
+/// let visible = |path: &[&str]| match path {
+///     ["age"] => Some(Column::new("age", ColumnType::Int)),
+///     ["salary"] if admin => Some(Column::new("salary", ColumnType::Int)),
+///     _ => None,
+/// };
+///
+/// assert!(Filter::compile("age > 21")?.to_fragment::<Postgres, _>(&visible).is_ok());
+/// assert!(Filter::compile("salary > 1")?.to_fragment::<Postgres, _>(&visible).is_err());
+/// # }
+/// # Ok::<_, sqlx_cel::Error>(())
+/// ```
 pub trait Schema {
     /// Resolve a CEL path to a column, or `None` to reject it.
     fn resolve(&self, path: &[&str]) -> Option<Column>;
 }
 
-impl<S: Schema + ?Sized> Schema for &S {
+/// Note this rules out a blanket `impl Schema for &S`: `&F` is itself `Fn` when
+/// `F` is, so the two overlap. The forwarding impl is the lesser loss -- the
+/// API already takes `&S`, so it only ever mattered for a caller holding a
+/// `&Table` who wanted `S` to be the reference itself.
+impl<F: Fn(&[&str]) -> Option<Column>> Schema for F {
     fn resolve(&self, path: &[&str]) -> Option<Column> {
-        (**self).resolve(path)
+        self(path)
     }
 }
 
@@ -1451,16 +1477,13 @@ mod tests {
 
         #[test]
         fn schema_sees_the_full_dotted_path() {
-            struct Recording;
-            impl Schema for Recording {
-                fn resolve(&self, path: &[&str]) -> Option<Column> {
-                    assert_eq!(path, ["profile", "city"]);
-                    Some(Column::new("city", ColumnType::Text))
-                }
-            }
+            let recording = |path: &[&str]| {
+                assert_eq!(path, ["profile", "city"]);
+                Some(Column::new("city", ColumnType::Text))
+            };
 
             let filter = Filter::compile("profile.city == 'Sofia'").unwrap();
-            filter.to_fragment::<Postgres, _>(&Recording).unwrap();
+            filter.to_fragment::<Postgres, _>(&recording).unwrap();
         }
     }
 
@@ -1704,18 +1727,12 @@ mod tests {
         /// "unquoted": a name is still doubled at the dialect's own quote
         /// character. The name here carries both quote characters, so each
         /// dialect escapes one and passes the other through untouched.
-        struct Hostile;
-
-        impl Schema for Hostile {
-            fn resolve(&self, _: &[&str]) -> Option<Column> {
-                Some(Column::new("a\"`b OR 1=1 --", ColumnType::Int))
-            }
-        }
-
         fn hostile<DB: Dialect>() -> String {
+            let injected = |_: &[&str]| Some(Column::new("a\"`b OR 1=1 --", ColumnType::Int));
+
             Filter::compile("age > 1")
                 .unwrap()
-                .to_fragment::<DB, _>(&Hostile)
+                .to_fragment::<DB, _>(&injected)
                 .unwrap()
                 .as_str()
                 .to_owned()
