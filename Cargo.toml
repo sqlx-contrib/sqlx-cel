@@ -19,29 +19,33 @@ all = { level = "deny", priority = -1 }
 pedantic = { level = "deny", priority = -1 }
 
 [dependencies]
-# Parser only -- `Program::compile` does not type-check, and cel-rust has no
-# equivalent of cel-go's checking phase at all. That is a design constraint to
-# walk around, not a version to wait out; see the crate docs.
-cel = { version = "0.14", default-features = false }
+# `chrono` is the only optional cel feature this crate wants. It is not for the
+# parser -- nothing under cel's `src/parser/` is gated, and `timestamp('...')`
+# reaches us as a `CallExpr` either way. It is for `Value::resolve`, which folds
+# closed subtrees like `timestamp('...') - duration('24h')` into one bind value.
+# That is also the only way to reach cel's Go-duration parser, which lives in a
+# private module.
+#
+# `regex` (cel's other default) is deliberately off: `matches()` always has a
+# column on one side, so it never folds, and we lower it to the dialect's own
+# regex operator instead.
+cel = { version = "0.14", default-features = false, features = ["chrono"] }
+# Not optional. cel is chrono-only, so there is no build of this crate that
+# avoids chrono, and the `Value::Timestamp` variant is unconditional.
+chrono = { version = "0.4", default-features = false, features = ["alloc"] }
 # 0.9 is the floor: `SqlSafeStr` and the `add<'t, T>` signature are both 0.9.
-# Optional: with no driver feature on, this crate is a pure CEL -> SQL
-# transpiler with no sqlx dependency at all.
-sqlx = { version = "0.9", default-features = false, optional = true }
-chrono = { version = "0.4", optional = true, default-features = false, features = ["alloc"] }
-time = { version = "0.3", optional = true, default-features = false, features = ["parsing"] }
+# The latter is what lets `Value` be bound by value out of a temporary.
+sqlx = { version = "0.9", default-features = false }
 
 [features]
-default = ["chrono", "postgres"]
+default = ["postgres"]
 
-# Driver support: each adds `Encode`/`Type` impls for `Value` and makes
-# `bind_all` available on that driver's queries.
-postgres = ["dep:sqlx", "sqlx/postgres"]
-sqlite = ["dep:sqlx", "sqlx/sqlite"]
-mysql = ["dep:sqlx", "sqlx/mysql"]
-
-# Which type `Value::Timestamp` holds. With both on, `chrono` wins.
-chrono = ["dep:chrono", "sqlx?/chrono"]
-time = ["dep:time", "sqlx?/time"]
+# Driver support: each adds a `Dialect` impl plus the `Encode`/`Type` impls for
+# `Value` on that driver. At least one is required; with none enabled there is
+# no `Dialect` to transpile against.
+postgres = ["sqlx/postgres", "sqlx/chrono"]
+sqlite = ["sqlx/sqlite", "sqlx/chrono"]
+mysql = ["sqlx/mysql", "sqlx/chrono"]
 
 [dev-dependencies]
 sqlx = { version = "0.9", default-features = false, features = ["postgres", "sqlite", "mysql", "chrono", "runtime-tokio"] }
